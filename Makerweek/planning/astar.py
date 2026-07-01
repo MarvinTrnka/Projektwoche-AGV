@@ -1,6 +1,8 @@
 import heapq
 
-def astar(grid, start, goal):
+WALL_BIAS = 3.0  # höher = stärker zur Mitte der Korridore hin
+
+def astar(grid, start, goal, dist_map=None):
     W = len(grid[0])
     H = len(grid)
 
@@ -11,13 +13,16 @@ def astar(grid, start, goal):
                     yield nx, ny
 
     open_set = []
-    heapq.heappush(open_set, (0, start))
+    heapq.heappush(open_set, (0.0, start))
     came_from = {}
-    g = {start: 0}
+    g      = {start: 0.0}
+    closed = set()
 
     while open_set:
         _, current = heapq.heappop(open_set)
-
+        if current in closed:
+            continue
+        closed.add(current)
         if current == goal:
             path = []
             while current in came_from:
@@ -25,12 +30,15 @@ def astar(grid, start, goal):
                 current = came_from[current]
             path.append(start)
             return path[::-1]
-
         for n in neighbors(*current):
-            new_cost = g[current] + 1
-            if n not in g or new_cost < g[n]:
-                g[n] = new_cost
-                f = new_cost + abs(n[0]-goal[0]) + abs(n[1]-goal[1])
+            if n in closed:
+                continue
+            dist  = float(dist_map[n[1]][n[0]]) if dist_map is not None else 1.0
+            cost  = 1.0 + WALL_BIAS / (dist + 0.5)
+            new_g = g[current] + cost
+            if n not in g or new_g < g[n]:
+                g[n] = new_g
+                f    = new_g + abs(n[0]-goal[0]) + abs(n[1]-goal[1])
                 heapq.heappush(open_set, (f, n))
                 came_from[n] = current
 

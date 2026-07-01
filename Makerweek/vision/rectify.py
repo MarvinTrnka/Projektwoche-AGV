@@ -9,6 +9,8 @@ import numpy as np
 #   "bl": (x,y)
 # }
 
+PADDING = 50  # Pixel Rand außerhalb der Eckmarker → AGV hinter Startlinie sichtbar
+
 def compute_warp_matrix(corners, W=800, H=800):
     src = np.float32([
         corners["tl"],
@@ -18,10 +20,10 @@ def compute_warp_matrix(corners, W=800, H=800):
     ])
 
     dst = np.float32([
-        [0, 0],
-        [W, 0],
-        [W, H],
-        [0, H]
+        [PADDING,       PADDING],
+        [W - PADDING,   PADDING],
+        [W - PADDING,   H - PADDING],
+        [PADDING,       H - PADDING],
     ])
 
     return cv2.getPerspectiveTransform(src, dst)
