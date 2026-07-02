@@ -62,7 +62,7 @@ MIN_TURN_RAD       = math.radians(5)
 
 # ── Selbstkalibrierung ────────────────────────────────────────────────────────
 # Aus jeder Drehung/Fahrt wird gemessen: kommandierte Steps vs. tatsächlich von der
-# Kamera gemessene Winkel-/Wegänderung → STEPS_PER_RAD / STEPS_PER_CELL werden per
+# Kamera gemessene Winkel-/Wegänderung → STEPS_PER_RAD / STEPS_PER_PX werden per
 # gleitendem Mittel angepasst und in calibration.json gespeichert (überlebt Neustart).
 CALIB_FILE   = os.path.join(os.path.dirname(__file__), "..", "calibration.json")
 CALIB_ALPHA  = 0.25    # Gewicht jeder neuen Messung (höher = schneller, unruhiger)

@@ -144,7 +144,7 @@ def main():
     print("    i  → Drehrichtung umkehren (falls AGV falsch herum dreht)")
     print("    c  → Kalibrierung zurücksetzen (Standardwerte)")
     print("    q  → Beenden")
-    print("  (STEPS_PER_RAD / STEPS_PER_CELL / Drehrichtung kalibrieren sich")
+    print("  (STEPS_PER_RAD / STEPS_PER_PX / Drehrichtung kalibrieren sich")
     print("   beim Fahren automatisch und werden in calibration.json gespeichert)")
     print()
 
