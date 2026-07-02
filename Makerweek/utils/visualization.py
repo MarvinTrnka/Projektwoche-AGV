@@ -18,12 +18,13 @@ _STATUS = {
 
 
 def show_debug(img, grid, pose, path, status="no_marker", goal=None,
-               other_agvs=None):
+               other_agvs=None, pivot=None):
     """
     Zeichnet Top-Down-Bild mit:
       - Roten Wandzellen
       - Cyan-Zielzelle
       - Grünem Pfad
+      - Gelbem Kreis für Lookahead-Pivot
       - Gelbem AGV-Kreis + Heading-Pfeil
       - Roten Kreisen für andere AGVs / Hindernisse
       - Status-Leiste oben
@@ -64,6 +65,11 @@ def show_debug(img, grid, pose, path, status="no_marker", goal=None,
     cv2.line(out, (0, FINISH_Y), (800, FINISH_Y), (255, 0, 200), 2)
     cv2.putText(out, "ZIEL", (10, FINISH_Y - 6),
                 cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 200), 1)
+
+    # Lookahead-Pivot gelb (Kreis, gefüllt)
+    if pivot is not None:
+        cv2.circle(out, (int(pivot[0]), int(pivot[1])), 8, (0, 220, 255), -1)
+        cv2.circle(out, (int(pivot[0]), int(pivot[1])), 8, (0, 0, 0), 1)
 
     # AGV gelb + Heading-Pfeil magenta
     if pose is not None:

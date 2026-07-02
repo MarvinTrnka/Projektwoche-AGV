@@ -1,9 +1,11 @@
 import cv2
 import cv2.aruco as aruco
+import math
 import numpy as np
 from vision.camera import Camera
-from vision.markers import detect_corner_markers, AGV_MARKER_ID
+from vision.markers import detect_corner_markers, detect_markers, AGV_MARKER_ID
 from vision.rectify import compute_warp_matrix
+from vision.pose import compute_pose
 
 cam = Camera("http://10.250.150.224:8081/")
 
@@ -13,7 +15,7 @@ detector = aruco.ArucoDetector(DICT)
 warp_matrix = None
 
 while True:
-    frame = cam.get_frame()
+    frame, _ = cam.get_frame()
     if frame is None:
         continue
 
@@ -40,28 +42,41 @@ while True:
     cv2.putText(raw, status, (10, 20), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (0, 200, 255), 2)
     cv2.imshow("Rohbild — alle Marker", raw)
 
-    # --- Top-Down: AGV-Marker suchen (im Rohbild, dann in Top-Down transformieren) ---
+    # --- Top-Down: AGV-Marker suchen + Heading anzeigen ---
     if warp_matrix is not None:
         topdown = cv2.warpPerspective(frame, warp_matrix, (800, 800))
         td_out  = topdown.copy()
 
-        # AGV im Rohbild suchen und Koordinaten transformieren
-        from vision.markers import detect_agv_marker
-        agv_corners = detect_agv_marker(frame, warp_matrix)
-        if agv_corners is not None:
-            mid = tuple(map(int, agv_corners.mean(axis=0)))
-            pts = agv_corners.reshape(1, 4, 2).astype(int)
+        agv_marker, _ = detect_markers(frame, warp_matrix, topdown)
+        pose = compute_pose(agv_marker)
+
+        if agv_marker is not None:
+            mid = tuple(map(int, agv_marker.mean(axis=0)))
+            pts = agv_marker.reshape(1, 4, 2).astype(int)
             cv2.polylines(td_out, pts, True, (0, 255, 0), 2)
             cv2.putText(td_out, f"AGV ID:{AGV_MARKER_ID}", (mid[0]-30, mid[1]-15),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
-            msg   = f"AGV (ID {AGV_MARKER_ID}) GEFUNDEN!"
+            msg   = f"AGV GEFUNDEN  theta={math.degrees(pose.theta):.1f}deg"
             color = (0, 255, 0)
+            # Heading-Pfeil: MAGENTA zeigt vorwärts-Richtung (nach HEADING_OFFSET)
+            dx = int(50 * math.cos(pose.theta))
+            dy = int(50 * math.sin(pose.theta))
+            cv2.arrowedLine(td_out, mid, (mid[0]+dx, mid[1]+dy),
+                            (255, 0, 255), 3, tipLength=0.3)
+            cv2.putText(td_out, "FWD", (mid[0]+dx+5, mid[1]+dy),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 255), 2)
+            # Marker-Kante 0->1: zeigt laut HEADING_OFFSET = AGV links (Cyan)
+            e0 = tuple(map(int, agv_marker[0]))
+            e1 = tuple(map(int, agv_marker[1]))
+            cv2.arrowedLine(td_out, e0, e1, (255, 255, 0), 2, tipLength=0.3)
+            cv2.putText(td_out, "edge0→1(links)", (e0[0]+5, e0[1]-8),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 0), 1)
         else:
             msg   = f"AGV (ID {AGV_MARKER_ID}) NICHT GEFUNDEN"
             color = (0, 0, 255)
 
-        cv2.putText(td_out, msg, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, color, 2)
-        cv2.imshow("Top-Down — AGV Suche", td_out)
+        cv2.putText(td_out, msg, (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.65, color, 2)
+        cv2.imshow("Top-Down — AGV + Heading", td_out)
 
     if cv2.waitKey(1) & 0xFF == ord('q'):
         break

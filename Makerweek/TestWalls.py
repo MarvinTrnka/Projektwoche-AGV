@@ -9,7 +9,7 @@ lower_blue = np.array([100, 80, 50])
 upper_blue = np.array([140, 255, 255])
 
 while True:
-    frame = cam.get_frame()
+    frame, _ = cam.get_frame()
     if frame is None:
         continue
 

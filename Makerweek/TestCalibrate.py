@@ -33,7 +33,7 @@ from control.agv_api import AGV
 
 # ─── Konfiguration ────────────────────────────────────────────────────────────
 CAMERA_URL  = "http://10.250.150.224:8081/"
-AGV_IP      = "172.17.1.47"
+AGV_IP      = "172.17.1.73"
 DRIVE_STEPS = 400    # Steps vorwärts (≈ 2 Zellen bei korrekter Kalibrierung)
 TURN_STEPS  = 130    # Steps für Drehtest (≈ 90° bei korrekter Kalibrierung)
 VEL_DRIVE   = 20    # % Fahrgeschwindigkeit — höher als Main.py damit Motoren sicher anlaufen

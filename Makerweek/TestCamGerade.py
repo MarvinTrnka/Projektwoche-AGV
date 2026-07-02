@@ -31,7 +31,7 @@ def compute_warp(corners, W=800, H=800):
     return cv2.getPerspectiveTransform(src, dst)
 
 while True:
-    frame = cam.get_frame()
+    frame, _ = cam.get_frame()
     if frame is None:
         continue
 

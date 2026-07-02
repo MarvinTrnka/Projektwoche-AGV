@@ -30,7 +30,7 @@ def draw_path(topdown, path, grid_size=40):
 
 
 while True:
-    frame = cam.get_frame()
+    frame, _ = cam.get_frame()
     if frame is None:
         continue
 

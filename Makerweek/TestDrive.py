@@ -30,7 +30,7 @@ import math
 import time
 from control.agv_api import AGV
 
-AGV_IP     = "172.17.1.47"
+AGV_IP     = "172.17.1.73"
 STEPS_TEST = 200    # Steps vorwärts/rückwärts
 STEPS_TURN = 130    # Steps für 90° Drehung — Startwert basierend auf Kalibrierung
 VEL        = 20     # Geschwindigkeit %
