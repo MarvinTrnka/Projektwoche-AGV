@@ -13,7 +13,7 @@ from vision.walls import detect_walls
 from vision.pose import compute_pose, world_to_grid, grid_to_world
 from planning.grid import mask_to_grid
 from planning.astar import astar
-from control.kinematics import (execute_next_segment, flip_turn_sign,
+from control.kinematics import (execute_next_segment, needs_turn, flip_turn_sign,
                                  reset_calibration, cancel_calibration)
 from control.agv_api import AGV
 from utils.visualization import show_debug
@@ -23,28 +23,26 @@ from utils.visualization import show_debug
 # ============================================================
 AGV_IP            = "172.17.1.73"
 CAMERA_URL        = "http://10.250.150.224:8081/"
-MAX_VELOCITY_PERC = 14    # Fahrgeschwindigkeit (min ~13% damit Motoren anlaufen)
-START_VEL_PERC    = 14    # Startgeschwindigkeit (erstes Segment)
+MAX_VELOCITY_PERC = 8     # Fahrgeschwindigkeit % (gemessener Live-Wert V3)
+START_VEL_PERC    = 8     # Startgeschwindigkeit (erstes Segment)
 ACCEL_PER_STEP    = 0     # % Zuwachs pro Segment (0 = konstant)
-WALL_DANGER_PERC  = 13    # Wand direkt voraus
+WALL_DANGER_PERC  = 8     # Wand direkt voraus
 
 # Schritt-Modus (Testrun): 't' drücken → AGV fährt Segment für Segment,
 # wartet nach jedem Segment auf Enter. Ideal für Kalibrierung.
-STEP_MODE_VEL     = 13    # Geschwindigkeit im Schritt-Modus
+STEP_MODE_VEL     = 8     # Geschwindigkeit im Schritt-Modus
 GOAL_REACH_CELLS  = 1.0   # Toleranz "Ziel erreicht" in Zellen (kleiner = fährt weiter
                           # über die Ziellinie; Ziel liegt 2 Zellen hinter der Linie)
 PATH_FAIL_LIMIT   = 60    # Frames ohne Pfad → Stopp (~2 s)
 WALL_AHEAD_CELLS  = 2     # Zellen voraus auf Wandprüfung
 BOUNDARY_CLEAR    = 20    # Pixel Feldrand freistellen
 
-# Einfahrt (AGV hinter Startlinie)
+# Einfahrt (AGV hinter Startlinie) — zählt in Kamerabildern (Kamera ~1 FPS)
 CREEP_STEPS       = 80    # Steps vorwärts pro Kriech-Schritt (~40% Gitterzelle)
-CREEP_FRAME_LIMIT = 300   # Sicherheitsstopp nach ~10 s (bei 30 fps)
+CREEP_FRAME_LIMIT = 30    # Sicherheitsstopp nach ~30 Kamerabildern ohne Marker
 
-# Blind-Fahrt (wenn Marker im Fahrbetrieb verloren)
-BLIND_STEPS        = 20   # Steps geradeaus pro blindem Schritt
-BLIND_INTERVAL     = 10   # Frames zwischen blinden Schritten
-BLIND_SAFETY_LIMIT = 20   # Frames bis Sicherheitsstopp (~3 s)
+# Marker im Fahrbetrieb verloren → warten, nach so vielen Bildern Sicherheitsstopp
+BLIND_SAFETY_LIMIT = 15   # Kamerabilder ohne Marker bis Sicherheitsstopp
 # ============================================================
 
 # ── Konsoleneingabe im Hintergrund ───────────────────────────────────────────
@@ -131,7 +129,9 @@ def main():
     step_waiting       = False  # wartet auf Enter im Schritt-Modus
     last_frame_ts      = -1.0   # Zeitstempel des letzten verarbeiteten Kamerabilds
     topdown            = None   # letztes Top-Down-Bild (für Anzeige zwischen Bildern)
-    stopped_ts         = 0.0    # Zeitpunkt an dem das AGV zuletzt stehen blieb
+    last_move_ts       = 0.0    # Zeitpunkt des letzten Zug-Endes (Bilder danach = frisch)
+    pose_is_camera     = False  # ist last_pose eine echte Kamera-Pose (nicht geschätzt)?
+    cam_pose           = None   # zuletzt von der Kamera erkannte Pose (oder None)
 
     print("=" * 50)
     print("AGV Steuerung")
@@ -230,20 +230,22 @@ def main():
                 free_img = ((grid == 0) * 255).astype(np.uint8)
                 dist_map = cv2.distanceTransform(free_img, cv2.DIST_L2, 3)
 
-            # ── AGV-Pose ──────────────────────────────────────────────
+            # ── AGV-Pose (echte Kamera-Messung) ───────────────────────
             agv_marker, other_agvs = detect_markers(frame, warp_matrix, topdown,
                                                     stale_frames=pose_stale_frames)
             last_other_agvs = other_agvs
-            pose = compute_pose(agv_marker)
-            if pose is not None:
-                last_pose         = pose
+            cam_pose = compute_pose(agv_marker)
+            if cam_pose is not None:
                 pose_stale_frames = 0
+                # Re-Lokalisierung: NUR im Stand + Bild nach dem letzten Zug → echte Pose
+                # übernehmen. Fährt das AGV (blind), NICHT auf ein altes Bild snappen.
+                if last_pose is None or (not moving_cache and frame_ts > last_move_ts):
+                    last_pose      = cam_pose
+                    pose_is_camera = True
             else:
                 pose_stale_frames += 1
-                pose = last_pose
-        else:
-            # Zwischen zwei Kamerabildern: letzte bekannte Pose behalten (kein Raten)
-            pose = last_pose
+        # Zwischen Bildern / während der Fahrt: dead-reckon-geschätzte last_pose behalten
+        pose = last_pose
 
         wall_close = wall_directly_ahead(grid, pose)
 
@@ -265,9 +267,10 @@ def main():
                 goal        = find_reachable_goal(grid, preferred_goal)
                 if goal is not None:
                     cached_path = astar(grid, start_cell, goal, dist_map)
-                moving_cache = False
-                stopped_ts   = time.time()
-                state        = "driving"
+                moving_cache   = False
+                last_move_ts   = time.time()
+                pose_is_camera = True         # gerade per Kamera lokalisiert
+                state          = "driving"
                 print(f"Marker erkannt @ ({pose.x:.0f},{pose.y:.0f}) – starte Pfad!")
 
             else:
@@ -279,10 +282,10 @@ def main():
                     moving_cache   = agv.is_moving()
                     moving_check_t = now
                     if prev_moving and not moving_cache:
-                        stopped_ts = now
-                if not moving_cache and frame_ts > stopped_ts:
-                    agv.set_max_acceleration(20)
-                    agv.set_max_velocity(15)
+                        last_move_ts = now
+                if not moving_cache and frame_ts > last_move_ts:
+                    agv.set_max_acceleration(3)
+                    agv.set_max_velocity(8)
                     agv.drive(CREEP_STEPS, CREEP_STEPS)
                     moving_cache   = True
                     moving_check_t = time.time()
@@ -302,18 +305,14 @@ def main():
                 agv.disable()
 
             elif pose_stale_frames > 0:
-                # Kein Marker: langsam geradeaus tappen (OHNE drehen)
-                cancel_calibration()   # blinde Taps verfälschen sonst die Messung
+                # Kein Marker sichtbar: NICHT blind weiterfahren, sondern anhalten und
+                # auf das nächste Kamerabild warten (Marker kommt meist sofort wieder).
+                # Erst nach BLIND_SAFETY_LIMIT Bildern greift der Sicherheitsstopp oben.
+                cancel_calibration()
                 now = time.time()
                 if now - moving_check_t >= 0.25:
                     moving_cache   = agv.is_moving()
                     moving_check_t = now
-                if not moving_cache and pose_stale_frames % BLIND_INTERVAL == 0:
-                    agv.set_max_acceleration(20)
-                    agv.set_max_velocity(15)
-                    agv.drive(BLIND_STEPS, BLIND_STEPS)
-                    moving_cache   = True
-                    moving_check_t = time.time()
 
             # Ziel erreicht?
             elif goal is not None and goal_reached(pose, goal):
@@ -327,14 +326,14 @@ def main():
                 agv.disable()
 
             else:
-                # is_moving() max alle 250 ms abfragen
+                # is_moving() max alle 250 ms abfragen; Zug-Ende (True→False) merken
                 now = time.time()
                 if now - moving_check_t >= 0.25:
                     prev_moving    = moving_cache
                     moving_cache   = agv.is_moving()
                     moving_check_t = now
                     if prev_moving and not moving_cache:
-                        stopped_ts = now   # AGV gerade stehengeblieben
+                        last_move_ts = now   # Zug fertig → Bilder danach sind „frisch"
 
                 if step_mode and step_waiting:
                     pass  # warte auf Enter im Terminal
@@ -342,13 +341,9 @@ def main():
                 elif moving_cache:
                     pass  # fährt noch – nicht stören
 
-                elif frame_ts <= stopped_ts:
-                    pass  # Kamera ~1 FPS: auf frisches Bild NACH dem Stopp warten,
-                          # bevor der nächste Zug geplant wird (kein blindes Durchfahren)
-
                 else:
-                    # AGV steht + frisches Kamerabild liegt vor → nächsten Zug planen
-                    # Wegpunkte überspringen die das AGV bereits passiert hat
+                    # AGV steht → nächsten Zug vorbereiten (Pose = Kamera-Snap wenn frisch,
+                    # sonst Dead-Reckoning-Schätzung). Wegpunkte trimmen:
                     if pose is not None and cached_path and len(cached_path) > 1:
                         while len(cached_path) > 1:
                             wp = grid_to_world(cached_path[1][0], cached_path[1][1])
@@ -377,6 +372,13 @@ def main():
                             print("Kein Pfad gefunden – gestoppt.")
                             agv.abort()
                             agv.disable()
+
+                    elif needs_turn(pose, path) and not pose_is_camera:
+                        # Vor einer DREHUNG ein frisches Kamerabild abwarten (Ecken genau
+                        # fahren). Der Snap oben setzt pose_is_camera, sobald ein Bild da
+                        # ist. GERADEN werden blind (dead-reckoned) gefahren – kein Warten.
+                        pass
+
                     else:
                         path_fail_frames = 0
                         if step_mode:
@@ -385,7 +387,10 @@ def main():
                             accel_vel = min(MAX_VELOCITY_PERC,
                                             START_VEL_PERC + segments_driven * ACCEL_PER_STEP)
                             vel = WALL_DANGER_PERC if (wall_close and segments_driven >= 2) else accel_vel
-                        count, last_pivot, _ = execute_next_segment(agv, pose, path, grid=grid, max_vel=vel)
+                        count, last_pivot, est_pose = execute_next_segment(
+                            agv, pose, path, grid=grid, max_vel=vel, pose_fresh=pose_is_camera)
+                        last_pose      = est_pose    # Dead-Reckoning-Schätzung übernehmen
+                        pose_is_camera = False       # ab jetzt geschätzt bis zum nächsten Snap
                         cached_path = cached_path[count:] if len(cached_path) > count else None
                         segments_driven += 1
                         moving_cache    = True
@@ -419,7 +424,7 @@ def main():
 
         # ── Display ───────────────────────────────────────────────────
         show_debug(topdown, grid, pose, path, status, goal,
-                   other_agvs=other_agvs, pivot=last_pivot)
+                   other_agvs=last_other_agvs, pivot=last_pivot)
 
         # ── Tastatur (CV2-Fenster) ────────────────────────────────────
         key = cv2.waitKey(1) & 0xFF
@@ -435,7 +440,8 @@ def main():
             cached_path      = None
             moving_cache     = False
             creep_frames     = 0
-            cancel_calibration()   # keine veraltete Messung vom letzten Lauf
+            last_move_ts     = 0.0   # sofort mit aktuellem (stehendem) Bild planen
+            cancel_calibration()     # keine veraltete Messung vom letzten Lauf
             agv.enable()
             if pose is not None and pose_stale_frames == 0 and grid is not None:
                 # AGV schon sichtbar → sofort A* berechnen und direkt fahren
@@ -444,7 +450,8 @@ def main():
                 goal        = find_reachable_goal(grid, preferred_goal)
                 if goal is not None:
                     cached_path = astar(grid, start_cell, goal, dist_map)
-                last_pivot = None
+                last_pivot     = None
+                pose_is_camera = True   # AGV ist sichtbar → Pose ist echt
                 state = "driving"
                 print(f"Marker sichtbar @ ({pose.x:.0f},{pose.y:.0f}) – sofort Pfad!")
             else:

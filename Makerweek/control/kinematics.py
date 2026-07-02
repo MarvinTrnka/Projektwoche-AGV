@@ -7,11 +7,22 @@ from vision.pose import grid_to_world
 # ============================================================
 # Kalibrierungskonstanten — nach TestCalibrate.py anpassen!
 # ============================================================
-STEPS_PER_CELL     = 200    # Steps für eine Gitterzelle vorwärts (~5 cm)
-STEPS_PER_RAD      = 83     # Steps pro Radian Drehung
-DRIVE_VELOCITY     = 14     # Fahrgeschwindigkeit % (min ~13-15 für Motor-Drehmoment)
-TURN_VELOCITY_PERC = 14     # Drehgeschwindigkeit %
+STEPS_PER_RAD      = 71.6   # Steps pro Radian (gemessen V3: 180°=225 Steps → 225/π)
+DRIVE_VELOCITY     = 8      # Fahrgeschwindigkeit % (gemessener Live-Wert V3)
+TURN_VELOCITY_PERC = 8      # Drehgeschwindigkeit % (gemessener Live-Wert V3)
+ACCEL_PERC         = 3      # Beschleunigung % (gemessener Live-Wert V3)
 CELL_PX            = 800 / 40          # 20 px pro Gitterzelle
+
+# ── Feld-Geometrie (NICHT quadratisch!) ─────────────────────────────────────────
+# Feld 200×300 cm wird auf 800×800 px gewarpt (PADDING=50 → 700 px Feld-Spanne).
+# Dadurch ist der Maßstab je Achse verschieden → Steps/Pixel für x ≠ y!
+STEPS_PER_CM   = 6.85               # gemessen V3
+FIELD_PX       = 800 - 2 * 50       # Feld-Spanne im Top-Down = 700 px
+FIELD_W_CM     = 200                # Breite  (Bild horizontal, tl→tr, links↔rechts)
+FIELD_H_CM     = 300                # Höhe    (Bild vertikal, oben→unten = Fahrtrichtung)
+# Steps pro Top-Down-Pixel je Achse (Startwerte, werden selbst kalibriert)
+STEPS_PER_PX_X = STEPS_PER_CM * FIELD_W_CM / FIELD_PX   # ~1.96 (x = 200 cm)
+STEPS_PER_PX_Y = STEPS_PER_CM * FIELD_H_CM / FIELD_PX   # ~2.94 (y = 300 cm)
 
 # Ausrichtung: erst drehen bis Fehler < TURN_ALIGN_DEG, DANN fahren.
 # So kann das AGV nie „mitten in der Kurve" losfahren und Wände schneiden.
@@ -32,7 +43,16 @@ TURN_SIGN          = 1
 
 # Standardwerte (für Reset) — die obigen Werte werden zur Laufzeit selbst kalibriert
 _DEFAULT_STEPS_PER_RAD  = STEPS_PER_RAD
-_DEFAULT_STEPS_PER_CELL = STEPS_PER_CELL
+_DEFAULT_STEPS_PER_PX_X = STEPS_PER_PX_X
+_DEFAULT_STEPS_PER_PX_Y = STEPS_PER_PX_Y
+
+
+def _steps_for_drive(dxp, dyp):
+    """Steps für eine gerade Fahrt um (dxp,dyp) Pixel — je nach dominanter Achse
+    (Feld ist nicht quadratisch, x und y haben verschiedene Steps/Pixel)."""
+    if abs(dxp) >= abs(dyp):
+        return abs(dxp) * STEPS_PER_PX_X, "x"
+    return abs(dyp) * STEPS_PER_PX_Y, "y"
 
 # Nicht mehr benutzt, aber für alte Testskripte erhalten:
 LATERAL_CORR_DEG   = 0.0
@@ -81,19 +101,24 @@ def _reset_turn_tracking():
     _turn_grew_count = 0
 
 
+def _calib_summary():
+    return (f"STEPS_PER_RAD={STEPS_PER_RAD:.0f}  "
+            f"STEPS_PER_PX x={STEPS_PER_PX_X:.2f}/y={STEPS_PER_PX_Y:.2f}  "
+            f"TURN_SIGN={TURN_SIGN:+d}  HEADING={math.degrees(vp.HEADING_OFFSET):.0f}°")
+
+
 def load_calibration():
     """Lädt gespeicherte Kalibrierung (falls vorhanden) beim Start."""
-    global STEPS_PER_RAD, STEPS_PER_CELL, TURN_SIGN
+    global STEPS_PER_RAD, STEPS_PER_PX_X, STEPS_PER_PX_Y, TURN_SIGN
     try:
         with open(CALIB_FILE) as f:
             d = json.load(f)
-        STEPS_PER_RAD    = float(d.get("steps_per_rad",  STEPS_PER_RAD))
-        STEPS_PER_CELL   = float(d.get("steps_per_cell", STEPS_PER_CELL))
-        TURN_SIGN        = int(d.get("turn_sign",        TURN_SIGN))
+        STEPS_PER_RAD     = float(d.get("steps_per_rad",  STEPS_PER_RAD))
+        STEPS_PER_PX_X    = float(d.get("steps_per_px_x", STEPS_PER_PX_X))
+        STEPS_PER_PX_Y    = float(d.get("steps_per_px_y", STEPS_PER_PX_Y))
+        TURN_SIGN         = int(d.get("turn_sign",        TURN_SIGN))
         vp.HEADING_OFFSET = float(d.get("heading_offset", vp.HEADING_OFFSET))
-        print(f"[CALIB] geladen: STEPS_PER_RAD={STEPS_PER_RAD:.0f}  "
-              f"STEPS_PER_CELL={STEPS_PER_CELL:.0f}  TURN_SIGN={TURN_SIGN:+d}  "
-              f"HEADING_OFFSET={math.degrees(vp.HEADING_OFFSET):.0f}°")
+        print(f"[CALIB] geladen: {_calib_summary()}")
     except (FileNotFoundError, ValueError, OSError):
         print("[CALIB] keine Datei – Standardwerte, kalibriert sich beim Fahren selbst")
 
@@ -103,7 +128,8 @@ def save_calibration():
     try:
         with open(CALIB_FILE, "w") as f:
             json.dump({"steps_per_rad":  round(STEPS_PER_RAD, 1),
-                       "steps_per_cell": round(STEPS_PER_CELL, 1),
+                       "steps_per_px_x": round(STEPS_PER_PX_X, 3),
+                       "steps_per_px_y": round(STEPS_PER_PX_Y, 3),
                        "turn_sign":      TURN_SIGN,
                        "heading_offset": round(vp.HEADING_OFFSET, 4)}, f, indent=2)
     except OSError as e:
@@ -112,17 +138,16 @@ def save_calibration():
 
 def reset_calibration():
     """Setzt Kalibrierung auf Standardwerte zurück (Terminal-Befehl 'c')."""
-    global STEPS_PER_RAD, STEPS_PER_CELL, TURN_SIGN, _pending_calib
+    global STEPS_PER_RAD, STEPS_PER_PX_X, STEPS_PER_PX_Y, TURN_SIGN, _pending_calib
     STEPS_PER_RAD     = _DEFAULT_STEPS_PER_RAD
-    STEPS_PER_CELL    = _DEFAULT_STEPS_PER_CELL
+    STEPS_PER_PX_X    = _DEFAULT_STEPS_PER_PX_X
+    STEPS_PER_PX_Y    = _DEFAULT_STEPS_PER_PX_Y
     TURN_SIGN         = 1
     vp.HEADING_OFFSET = _DEFAULT_HEADING_OFFSET
     _pending_calib    = None
     _reset_turn_tracking()
     save_calibration()
-    print(f"[CALIB] zurückgesetzt: STEPS_PER_RAD={STEPS_PER_RAD:.0f}  "
-          f"STEPS_PER_CELL={STEPS_PER_CELL:.0f}  TURN_SIGN={TURN_SIGN:+d}  "
-          f"HEADING_OFFSET={math.degrees(vp.HEADING_OFFSET):.0f}°")
+    print(f"[CALIB] zurückgesetzt: {_calib_summary()}")
 
 
 def cancel_calibration():
@@ -131,16 +156,25 @@ def cancel_calibration():
     _pending_calib = None
 
 
-def _apply_calibration(pose):
-    """Misst die zuvor kommandierte Bewegung (Kamera) und passt die Konstanten an."""
-    global STEPS_PER_RAD, STEPS_PER_CELL, _pending_calib
+def _apply_calibration(pose, pose_fresh):
+    """Misst die zuvor kommandierte Bewegung (Kamera) und passt die Konstanten an.
+
+    Kalibriert NUR wenn sowohl die Pose VOR dem Zug als auch die jetzige Pose echte
+    Kamera-Messungen sind (fresh) — im Blind-/Dead-Reckoning-Betrieb wären die
+    Messungen sonst wertlos und würden gute Werte verderben.
+    """
+    global STEPS_PER_RAD, STEPS_PER_PX_X, STEPS_PER_PX_Y, _pending_calib
     if _pending_calib is None or not CALIB_ON or pose is None:
+        return
+    fresh0 = _pending_calib[-1]
+    if not (fresh0 and pose_fresh):
+        _pending_calib = None      # gemischte/geschätzte Pose → Messung verwerfen
         return
     kind    = _pending_calib[0]
     changed = False
 
     if kind == "turn":
-        _, theta0, steps = _pending_calib
+        _, theta0, steps, _ = _pending_calib
         dtheta = abs(_normalize_angle(pose.theta - theta0))
         # nur wenn spürbar gedreht und nicht am Wrap-Rand (>120° = mehrdeutig)
         if math.radians(6) < dtheta < math.radians(120) and abs(steps) > 3:
@@ -151,18 +185,24 @@ def _apply_calibration(pose):
             changed = True
 
     elif kind == "drive":
-        _, x0, y0, theta0, steps = _pending_calib
+        _, x0, y0, theta0, steps, _ = _pending_calib
         dxp, dyp = pose.x - x0, pose.y - y0
         dist = math.hypot(dxp, dyp)
         # nur wenn spürbar gefahren und plausibel (kein Marker-Sprung)
         if 8 < dist < 250 and steps > 3:
-            measured       = max(50.0, min(600.0, steps / dist * CELL_PX))
-            STEPS_PER_CELL = (1 - CALIB_ALPHA) * STEPS_PER_CELL + CALIB_ALPHA * measured
-            print(f"[CALIB] Fahrt {dist:.0f}px bei {steps} steps "
-                  f"→ STEPS_PER_CELL={STEPS_PER_CELL:.0f}")
+            # Steps/Pixel je nach dominanter Achse kalibrieren (Feld nicht quadratisch)
+            if abs(dxp) >= abs(dyp):
+                measured       = max(0.5, min(8.0, steps / abs(dxp)))
+                STEPS_PER_PX_X = (1 - CALIB_ALPHA) * STEPS_PER_PX_X + CALIB_ALPHA * measured
+                axis = "x"
+            else:
+                measured       = max(0.5, min(8.0, steps / abs(dyp)))
+                STEPS_PER_PX_Y = (1 - CALIB_ALPHA) * STEPS_PER_PX_Y + CALIB_ALPHA * measured
+                axis = "y"
+            print(f"[CALIB] Fahrt {dist:.0f}px ({axis}) bei {steps} steps  "
+                  f"→ STEPS_PER_PX x={STEPS_PER_PX_X:.2f}/y={STEPS_PER_PX_Y:.2f}")
             changed = True
             # HEADING_OFFSET nachführen: echte Bewegungsrichtung vs. gemeldete Heading.
-            # (nur bei längerer Fahrt, wo die Richtung zuverlässig messbar ist)
             if dist > 20:
                 head_err = _normalize_angle(math.atan2(dyp, dxp) - theta0)
                 if abs(head_err) > HEAD_DEADBAND:
@@ -197,14 +237,13 @@ def fix_path_start_direction(path, pose, max_turn_deg=100.0):
     return path
 
 
-def turn_to_angle(agv, pose, waypoint_pixel, extra_angle=0.0):
+def turn_to_angle(agv, pose, waypoint_pixel, extra_angle=0.0, pose_fresh=True):
     """Dreht gedämpft (TURN_KP) Richtung Wegpunkt und kalibriert die Drehrichtung.
 
-    - Dreht pro Aufruf nur TURN_KP·Fehler (geklemmt) → über mehrere Ticks mit
-      frischer Kamera-Pose konvergierend, robust gegen falsches STEPS_PER_RAD.
-    - AUTO-DREHRICHTUNG: wird der Fehler nach der letzten Drehung GRÖSSER statt
-      kleiner, dreht das AGV physisch falsch herum → TURN_SIGN wird umgekehrt.
-    Gibt den aktuellen Restfehler in Radiant zurück.
+    Dreht pro Aufruf nur TURN_KP·Fehler (geklemmt) → konvergiert über mehrere
+    Drehungen mit frischer Kamera-Pose. Die AUTO-DREHRICHTUNG (TURN_SIGN kippt wenn
+    der Fehler wächst) wird nur mit ECHTER Kamera-Pose ausgewertet (pose_fresh).
+    Gibt die dead-reckon-geschätzte neue Heading (rad) zurück.
     """
     global TURN_SIGN, _last_turn_error, _turn_grew_count, _pending_calib
 
@@ -213,30 +252,28 @@ def turn_to_angle(agv, pose, waypoint_pixel, extra_angle=0.0):
     target_angle = math.atan2(dy, dx) + extra_angle
     error = _normalize_angle(target_angle - pose.theta)
 
-    # Auto-Erkennung: hat die letzte Drehung den Fehler VERGRÖSSERT?
-    # Bei richtiger Drehrichtung schrumpft er immer → kein Fehlalarm.
-    #  - deutlich größer (>10°)  → sofort kippen (eindeutig falsch herum)
-    #  - leicht größer  (>2°) 2× → kippen (langsamer Fall)
-    auto    = ""
-    flipped = False
-    if _last_turn_error is not None:
-        grew = abs(error) - abs(_last_turn_error)
-        if grew > math.radians(10):
-            TURN_SIGN = -TURN_SIGN
-            _turn_grew_count = 0
-            flipped = True
-        elif grew > math.radians(2):
-            _turn_grew_count += 1
-            if _turn_grew_count >= 2:
+    # Auto-Drehrichtungs-Erkennung nur mit echter Kamera-Pose (sonst wertlos)
+    auto = ""
+    if pose_fresh:
+        flipped = False
+        if _last_turn_error is not None:
+            grew = abs(error) - abs(_last_turn_error)
+            if grew > math.radians(10):
                 TURN_SIGN = -TURN_SIGN
                 _turn_grew_count = 0
                 flipped = True
-        else:
-            _turn_grew_count = 0
-    if flipped:
-        auto = f"  [AUTO: falsch herum → TURN_SIGN={TURN_SIGN:+d}]"
-        save_calibration()
-    _last_turn_error = error
+            elif grew > math.radians(2):
+                _turn_grew_count += 1
+                if _turn_grew_count >= 2:
+                    TURN_SIGN = -TURN_SIGN
+                    _turn_grew_count = 0
+                    flipped = True
+            else:
+                _turn_grew_count = 0
+        if flipped:
+            auto = f"  [AUTO: falsch herum → TURN_SIGN={TURN_SIGN:+d}]"
+            save_calibration()
+        _last_turn_error = error
 
     max_rad = math.radians(MAX_TURN_STEP_DEG)
     cmd     = max(-max_rad, min(max_rad, error * TURN_KP))   # gedämpft + geklemmt
@@ -248,14 +285,15 @@ def turn_to_angle(agv, pose, waypoint_pixel, extra_angle=0.0):
           f"steps={steps} (SIGN={TURN_SIGN:+d}){auto}")
 
     if steps != 0:
-        agv.set_max_acceleration(15)
+        agv.set_max_acceleration(ACCEL_PERC)
         agv.set_max_velocity(TURN_VELOCITY_PERC)
         # drive(steps, -steps): Vorzeichen = Drehrichtung (per TURN_SIGN kalibrierbar)
         agv.drive(steps, -steps)
         agv.wait_for_stop()
-        # Messung für Selbstkalibrierung merken (theta VOR der Drehung)
-        _pending_calib = ("turn", pose.theta, steps)
-    return error
+        # Messung für Selbstkalibrierung merken (theta VOR der Drehung + Frische-Flag)
+        _pending_calib = ("turn", pose.theta, steps, pose_fresh)
+    # Dead-Reckoning: geschätzte neue Heading (Drehung um cmd in Richtung Ziel)
+    return _normalize_angle(pose.theta + cmd)
 
 
 def _straight_run_end(path):
@@ -272,24 +310,33 @@ def _straight_run_end(path):
     return run_end
 
 
-def execute_next_segment(agv, pose, path, grid=None, max_vel=DRIVE_VELOCITY):
-    """Ein Manhattan-Zug: ENTWEDER auf die Streckenrichtung drehen ODER die
-    gerade Strecke bis zur Ecke am Stück fahren.
+def needs_turn(pose, path):
+    """True wenn der nächste Zug eine Drehung ist (AGV nicht auf Streckenrichtung
+    ausgerichtet). Main nutzt das, um VOR Drehungen auf ein frisches Kamerabild zu
+    warten (Genauigkeit an Ecken), Geraden aber blind zu fahren."""
+    if pose is None or path is None or len(path) < 2:
+        return False
+    run_end = _straight_run_end(path)
+    tx, ty  = grid_to_world(path[run_end][0], path[run_end][1])
+    error   = _normalize_angle(math.atan2(ty - pose.y, tx - pose.x) - pose.theta)
+    return abs(error) > math.radians(TURN_ALIGN_DEG)
 
-    Der A*-Pfad ist rechtwinklig (nur 90°-Ecken). Wir bündeln alle gleich
-    gerichteten Zellen zu einer geraden Strecke, richten uns darauf aus und
-    fahren sie in einem Zug. Danach gibt Main.py der Kamera Zeit für frisches
-    Feedback, bevor der nächste Zug (i.d.R. eine 90°-Drehung) kommt.
 
-    Rückgabe (count, target_pixel, moved):
+def execute_next_segment(agv, pose, path, grid=None, max_vel=DRIVE_VELOCITY,
+                         pose_fresh=True):
+    """Ein Manhattan-Zug: ENTWEDER auf die Streckenrichtung drehen ODER die gerade
+    Strecke bis zur Ecke am Stück fahren. Fahrstrecke wird pro Achse in Steps
+    umgerechnet (Feld nicht quadratisch).
+
+    Rückgabe (count, target_pixel, est_pose):
       count = 0        → nur gedreht (keine Zelle konsumiert)
       count = run_end  → gerade Strecke gefahren (run_end Zellen konsumiert)
-      moved            → True nur wenn tatsächlich vorwärts gefahren wurde
+      est_pose         → Dead-Reckoning-Schätzung der Pose NACH dem Zug
     """
     global _pending_calib
 
-    # Zuerst die zuvor kommandierte Bewegung mit frischer Pose vermessen (Kalibrierung)
-    _apply_calibration(pose)
+    # Zuerst den zuvor kommandierten Zug vermessen (nur wenn Posen echt/fresh sind)
+    _apply_calibration(pose, pose_fresh)
 
     run_end      = _straight_run_end(path)
     target_pixel = grid_to_world(path[run_end][0], path[run_end][1])
@@ -299,33 +346,38 @@ def execute_next_segment(agv, pose, path, grid=None, max_vel=DRIVE_VELOCITY):
     error   = _normalize_angle(math.atan2(dy, dx) - pose.theta)
 
     print(f"[SEG]  pos=({pose.x:.0f},{pose.y:.0f})  strecke→grid{tuple(path[run_end])}  "
-          f"({run_end} Zellen)  dist={dist_px:.0f}px  error={math.degrees(error):+.0f}°")
+          f"({run_end} Zellen)  dist={dist_px:.0f}px  error={math.degrees(error):+.0f}°"
+          f"  {'[Kamera]' if pose_fresh else '[geschätzt]'}")
 
-    # Sicherheit: Ziel liegt HINTER dem AGV und ist nah → überschossen.
-    # Nicht umdrehen, sondern diese Zelle überspringen.
+    # Sicherheit: Ziel liegt HINTER dem AGV und ist nah → überschossen → überspringen.
     if abs(error) > math.radians(115) and dist_px < CELL_PX * 1.4:
         print("[SKIP] Ziel liegt dicht hinter dem AGV (überschossen) → überspringe")
         _reset_turn_tracking()
-        return 1, target_pixel, False
+        return 1, target_pixel, pose
 
-    # Noch nicht auf die Streckenrichtung ausgerichtet → NUR drehen (90°-Ecke).
+    # Noch nicht ausgerichtet → NUR drehen (90°-Ecke).
     if abs(error) > math.radians(TURN_ALIGN_DEG):
-        turn_to_angle(agv, pose, target_pixel)
-        return 0, target_pixel, False
+        new_theta = turn_to_angle(agv, pose, target_pixel, pose_fresh=pose_fresh)
+        return 0, target_pixel, vp.Pose(pose.x, pose.y, new_theta)
 
-    # Ausgerichtet → gerade Strecke bis zur Ecke am Stück fahren.
-    _reset_turn_tracking()   # neue Strecke → Auto-Dreherkennung zurücksetzen
-    drive_dist  = min(dist_px, CELL_PX * (MAX_RUN_CELLS + 0.5))
-    drive_steps = max(1, int(drive_dist * STEPS_PER_CELL / CELL_PX))
+    # Ausgerichtet → gerade Strecke fahren. Steps je nach Achse (Feld nicht quadratisch).
+    _reset_turn_tracking()
+    drive_dist   = min(dist_px, CELL_PX * (MAX_RUN_CELLS + 0.5))
+    scale        = drive_dist / dist_px if dist_px > 1e-6 else 0.0
+    ddx, ddy     = dx * scale, dy * scale     # tatsächlich gefahrener px-Vektor
+    steps_f, axis = _steps_for_drive(ddx, ddy)
+    drive_steps  = max(1, int(steps_f))
 
-    print(f"[DRIVE] {run_end} Zellen gerade  →  {drive_steps} Steps "
+    print(f"[DRIVE] {run_end} Zellen gerade ({axis})  →  {drive_steps} Steps "
           f"({drive_dist:.0f}px)  vel={max_vel}%")
-    agv.set_max_acceleration(15)
+    agv.set_max_acceleration(ACCEL_PERC)
     agv.set_max_velocity(max_vel)
     agv.drive(drive_steps, drive_steps)
-    # Messung für Selbstkalibrierung merken (Position + Heading VOR der Fahrt)
-    _pending_calib = ("drive", pose.x, pose.y, pose.theta, drive_steps)
-    return run_end, target_pixel, True
+    # Messung merken (Position + Heading + Frische VOR der Fahrt)
+    _pending_calib = ("drive", pose.x, pose.y, pose.theta, drive_steps, pose_fresh)
+    # Dead-Reckoning: geschätzte neue Position = angefahrenes Streckenende
+    est = vp.Pose(pose.x + ddx, pose.y + ddy, pose.theta)
+    return run_end, target_pixel, est
 
 
 # Gespeicherte Kalibrierung beim Import laden (falls calibration.json existiert)
